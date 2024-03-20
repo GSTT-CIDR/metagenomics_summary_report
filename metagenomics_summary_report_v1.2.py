@@ -13,17 +13,15 @@ parser = argparse.ArgumentParser(description='The script produces a summary of o
 parser.add_argument('--sample_names_file', type=str, help='File path to the list of sample names.')
 parser.add_argument('--results_dir', type=str, help='Directory path for the results.')
 parser.add_argument('--output_excel', type=str, help='Output file path for the Excel file.')
-parser.add_argument('--abundance_threshold', type=int, default=1, help='Minimum abundance threshold for filtering (default: 1).')
+parser.add_argument('--abundance_threshold', type=float, default=1.0, help='Minimum abundance threshold for filtering (default: 1.0).')
 
 args = parser.parse_args()
-
 
 
 # Replace hardcoded paths with arguments
 NODES = "./db/ref/refseq/taxonomy/nodes.dmp"
 NAMES = "./db/ref/refseq/taxonomy/names.dmp"
 tax = taxonomy.Taxonomy.from_ncbi(NODES, NAMES)
-
 
 
 def atoi(text):
@@ -38,7 +36,7 @@ def get_genus(taxID, tax):
         return int(genus.id)
     except:
         return "None"
-    
+
 # Reading sample names from the file specified in the command line
 sample_names = []
 with open(args.sample_names_file, 'r') as file:
@@ -80,17 +78,29 @@ for f in files:
     results[sample] = {}
     for time in time_points:
         bac_path = f"{f}/{time}_hours/centrifuge/bacterial_centrifuge_report.tsv"
+        read_stats_path = f"{f}/{time}_hours/host/{sample}_{time}_hours_map_stats.txt"
+        # Read the mapping statistics
+        if os.path.exists(read_stats_path):
+            with open(read_stats_path, 'r') as stats_file:
+                total_reads = int(stats_file.readline().strip())
+                human_reads = int(stats_file.readline().split('/')[0].strip())
+        else:
+            total_reads, human_reads = 0, 0
+            
+        # Calculate the percentage of human and microbial reads
+        if total_reads > 0:
+            human_reads_percentage = round((human_reads / total_reads) * 100, 1)
+
         if os.path.exists(bac_path):
             df = pd.read_csv(bac_path, sep="\t")
-            df = df[df["Tax_ID"] != 9606] 
             total_counts = df["Counts"].sum()
-            df["Percentage"] = round(df["Counts"] / total_counts * 100,3)
+            df["Percentage"] = round(df["Counts"] / total_counts * 100, 3)
             df = df[(df["Percentage"] >= threshold) | (df["Organism"].str.contains("Candida|Aspergillus|Mycoplasma|Legionella|Chlamydia|Pneumocystis|Mycobacterium|Mycobacteroides"))]
             df = df[["Organism", "Counts", "Percentage"]]
-            organisms, counts, percentage = df.apply(lambda x:"\n".join([str(i) for i in x]))
+            organisms, counts, percentage = df.apply(lambda x: "\n".join([str(i) for i in x]))
         else:
-            total_counts, organisms, counts, percentage = 0,0,0,0
-            
+            total_counts, organisms, counts, percentage = 0, 0, 0, 0
+        
         ## viral
         read_path = f"{f}/{time}_hours/centrifuge/viral_centrifuge_report.tsv"
         # Initialize virus and v_counts
@@ -102,16 +112,22 @@ for f in files:
                 read_df = read_df[["Organism", "Counts"]]
                 virus, v_counts = read_df.apply(lambda x: "\n".join([str(i) for i in x]))
 
-        # Now virus and v_counts are always defined when updating results[sample]
+        # Update the results dictionary with the new metrics
         results[sample].update({
+            f"Total Reads {time} hrs": total_reads,
+            f"Human Reads {time} hrs": human_reads,
+            f"Human Reads Percentage {time} hrs": human_reads_percentage,
             f"Total classified {time} hrs": total_counts,
             f"Organisms {time} hrs": organisms,
             f"Counts {time} hrs": counts,
-            f"Percentage {time} hrs": percentage,
+            f"Organism percentage abundance {time} hrs": percentage,
             f"Viral organism {time} hrs": virus,
             f"Viral counts {time} hrs": v_counts
         })
-        
+
+
+
+
 # Reset the index to make the sample names a regular column instead of the index
 master = pd.DataFrame.from_dict(results, orient="index").reset_index()
 
